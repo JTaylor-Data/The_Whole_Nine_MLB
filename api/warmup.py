@@ -309,6 +309,27 @@ def _warm(conn, full):
         for role in ("pitcher", "batter"):
             _league_averages_cached(conn, role, season)
         _step("end:pitcher_page_season_pools")
+        # First-request builds the page endpoints would otherwise pay once per refresh:
+        # the Career page's current-season league scans, the batter page's league swing
+        # profile, and the Stuff+ leaderboard under the exact (season, n) keys the
+        # frontend asks for (the key includes n, so warming the default did not cover them).
+        _step("start:first_request_builds")
+        from api.routers.career import (
+            _league_hr_fb as _career_league_hr_fb, _season_batter_hr_counts, _season_pitcher_k_counts,
+        )
+        from api.routers.players import _league_swing_profile
+        from api.routers.stuff_model_report import _stuff_leaderboard_overall
+        _career_league_hr_fb(conn, season)
+        _season_pitcher_k_counts(conn, season)
+        _season_batter_hr_counts(conn, season)
+        _league_swing_profile(conn, season)
+        for n in (10, 15):
+            _stuff_leaderboard_overall(conn, season, n)
+        from api.routers.players import _league_avg_xwoba
+        from api.routers.tunneling_report import _v3_leaderboard
+        _league_avg_xwoba(conn, season)
+        _v3_leaderboard(conn, season)
+        _step("end:first_request_builds")
         # Warm last 10 game dates for the "Top performer" badge on player pages.
         _step("start:leaderboard_10_dates")
         recent_dates = [r[0] for r in conn.execute(

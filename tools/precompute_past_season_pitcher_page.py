@@ -28,6 +28,7 @@ os.environ.setdefault("SKIP_WARMUP", "1")
 from analytics.metrics import classify_pitcher_roles, league_average_woba  # noqa: E402
 from analytics.player_page import league_hr_per_fb  # noqa: E402
 from api.routers.heatmaps import compute_league_command_pool  # noqa: E402
+from api.routers.tunneling_report import compute_v3_leaderboard  # noqa: E402
 from analytics.player_page import (  # noqa: E402
     all_pitcher_arm_angles, approach_angle_pool, league_avg_xwoba, league_average_batter_row,
     league_average_swing_profile, peer_movement_table, pitcher_league_avg_row,
@@ -42,7 +43,7 @@ def main():
     conn = sqlite3.connect(db_path)
     snap = {"arm_angles": {}, "peer_movement": {}, "approach_pool": {}, "league_avgs": {},
             "league_batter_row": {}, "league_pitcher_row": {}, "league_swing_profile": {},
-            "league_woba": {}, "league_xwoba": {}, "pitcher_roles": {}, "league_hr_fb": {}, "command_pool": {}}
+            "league_woba": {}, "league_xwoba": {}, "pitcher_roles": {}, "league_hr_fb": {}, "command_pool": {}, "tunneling_leaderboard": {}}
     for season in range(EARLIEST_SEASON, CURRENT_SEASON):
         t0 = time.time()
         key = str(season)
@@ -75,6 +76,7 @@ def main():
             name: {str(pid): by_type for pid, by_type in compute_league_command_pool(conn, season, split).items()}
             for name, split in (("ALL", None), ("L", "L"), ("R", "R"))
         }
+        snap["tunneling_leaderboard"][key] = compute_v3_leaderboard(conn, season)
         snap["league_hr_fb"][key] = float(league_hr_per_fb(conn, season))
         snap["league_woba"][key] = float(league_average_woba(conn, season))
         snap["league_xwoba"][key] = float(league_avg_xwoba(conn, season))

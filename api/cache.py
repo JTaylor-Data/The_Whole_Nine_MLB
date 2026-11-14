@@ -14,6 +14,10 @@ import time
 from functools import wraps
 
 DEFAULT_TTL_SECONDS = 36 * 3600
+# A finished season's numbers never change, and only the current season is rebuilt by the nightly
+# warm-up, so a past-season entry that expired after 36 h stayed cold until someone paid for it.
+# Entries keyed on finished seasons only now last a week (restarts still clear everything).
+PAST_SEASON_TTL_SECONDS = 7 * 24 * 3600
 
 # Caps how many distinct (args) keys a single cached function can hold at
 # once - without this, a cache keyed by things like player_id/season/split
@@ -53,6 +57,14 @@ def _is_past_season_key(key, current_season):
     seasons = [a for a in list(args) + [v for _, v in kwargs]
                if isinstance(a, int) and not isinstance(a, bool) and 2000 <= a <= 2100]
     return bool(seasons) and all(x < current_season for x in seasons)
+
+
+def _ttl_for(key, ttl_seconds):
+    """Longer lifetime for entries that only involve finished seasons (see PAST_SEASON_TTL_SECONDS)."""
+    from config.model_policy import CURRENT_SEASON
+    if ttl_seconds < PAST_SEASON_TTL_SECONDS and _is_past_season_key(key, CURRENT_SEASON):
+        return PAST_SEASON_TTL_SECONDS
+    return ttl_seconds
 
 
 def ttl_cache(ttl_seconds=DEFAULT_TTL_SECONDS):
@@ -97,7 +109,7 @@ def ttl_cache(ttl_seconds=DEFAULT_TTL_SECONDS):
                     if now < expires_at:
                         return value
                 value = fn(conn, *args, **kwargs)
-                _store_set(store, key, (value, time.monotonic() + ttl_seconds))
+                _store_set(store, key, (value, time.monotonic() + _ttl_for(key, ttl_seconds)))
             return value
 
         def clear():
@@ -141,7 +153,7 @@ def ttl_cache_all_args(ttl_seconds=DEFAULT_TTL_SECONDS):
                     if now < expires_at:
                         return value
                 value = fn(*args, **kwargs)
-                _store_set(store, key, (value, time.monotonic() + ttl_seconds))
+                _store_set(store, key, (value, time.monotonic() + _ttl_for(key, ttl_seconds)))
             return value
 
         def clear():

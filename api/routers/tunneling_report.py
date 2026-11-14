@@ -24,6 +24,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from api import past_season_snapshot
 from api.cache import ttl_cache
 from api.db import get_conn
 from analytics.tunneling_pair_composite import (
@@ -74,17 +75,33 @@ def _cached_season_pairs(conn, season):
     AND separately in api/routers/players.py's _tunneling_pair_season();
     the two caches are independent stores (ttl_cache keys per decorated
     function), so each pays its own first-request cost, but both call the
-    identical season_all_pairs() and therefore always agree."""
-    return season_all_pairs(conn, season)
+    identical season_all_pairs() and therefore always agree.
+
+    Reads the precomputed parquet (via players._tunneling_pair_season) when one exists; the live
+    computation took ~30 s locally and minutes on the production machine, for whoever opened a
+    season's Tunneling+ page first."""
+    from api.routers.players import _tunneling_pair_season
+    pairs = _tunneling_pair_season(conn, season)
+    return pairs if pairs is not None else season_all_pairs(conn, season)
+
+
+@ttl_cache()
+def _v3_leaderboard(conn, season):
+    snap = past_season_snapshot.get("tunneling_leaderboard", season)
+    if snap is not None:
+        return snap
+    return compute_v3_leaderboard(conn, season)
+
+
+def compute_v3_leaderboard(conn, season):
+    return composite_leaderboard(conn, season, all_pairs_df=_cached_season_pairs(conn, season))
 
 
 @router.get("/v3/report")
 def get_v3_report(season: int, conn=Depends(get_conn)):
     """Leaderboard for the live Tunneling+ composite, for the requested
     season."""
-    all_pairs = _cached_season_pairs(conn, season)
-    lb = composite_leaderboard(conn, season, all_pairs_df=all_pairs)
-    return {"season": season, "leaderboard": lb}
+    return {"season": season, "leaderboard": _v3_leaderboard(conn, season)}
 
 
 @router.get("/v3/pitcher/{pitcher_id}")

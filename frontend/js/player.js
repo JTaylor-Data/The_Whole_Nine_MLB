@@ -1816,7 +1816,9 @@ async function loadPlayer() {
   renderPercentiles(data.percentiles);
   renderRightPanel(data);
   document.getElementById("last-5-title").textContent = state.mode === "pitcher" ? "Last 5 Outings" : "Last 5 Games";
-  document.getElementById("last-5-mount").innerHTML = buildLast5Card(data.last_5_games, state.mode, data.il_status);
+  document.getElementById("last-5-mount").innerHTML = data.last_5_pending
+    ? `<div class="card"><div class="empty-state">Loading recent games...</div></div>`
+    : buildLast5Card(data.last_5_games, state.mode, data.il_status);
   if (data.last_5_pending) {
     // The top-performer highlight needs full-day leaderboards (slow on days not
     // seen since the last restart), so the payload carries the games without it
@@ -1830,7 +1832,11 @@ async function loadPlayer() {
         document.getElementById("last-5-mount").innerHTML = buildLast5Card(full.last_5_games, last5Mode, data.il_status);
         if (last5Mode === "pitcher") _scheduleAlignSettle();
       })
-      .catch(() => {});
+      .catch(() => {
+        if (last5Id === loadPlayerRequestId) {
+          document.getElementById("last-5-mount").innerHTML = buildLast5Card([], last5Mode, data.il_status);
+        }
+      });
   }
   if (state.mode === "pitcher") {
     _scheduleAlignSettle();

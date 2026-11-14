@@ -686,7 +686,10 @@ def _build_player_steps(conn, player_id, role, split, season):
 
     team_id = _team_for_season(conn, player_id, season, role) or team_id
     base = {"player_id": player_id, "name": name, "team_id": team_id, "position": position, "role": role, "split": split, "season": season}
-    base["last_5_games"] = _last_5_basic(conn, season, player_id, role)
+    # The last five games come from live box scores (five MLB API calls for a player nobody has opened
+    # yet), so the page no longer waits for them: it renders at once and fills the card from
+    # /player/{id}/last-5 (the top-performer highlight was already loaded that way).
+    base["last_5_games"] = []
     base["last_5_pending"] = True
     base["il_status"] = _il_status(conn, player_id)
     if role == "pitcher":
