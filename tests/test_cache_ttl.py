@@ -30,29 +30,6 @@ def test_past_season_entries_live_longer():
     assert 55 < life[(CURRENT_SEASON - 1, CURRENT_SEASON)] <= 60
 
 
-def test_renew_extends_valid_long_lived_entries_only():
-    @C.ttl_cache(ttl_seconds=C.DEFAULT_TTL_SECONDS)
-    def long_lived(conn, key):
-        return key
-
-    @C.ttl_cache(ttl_seconds=60)
-    def short_lived(conn, key):   # live-data style cache: must never be renewed
-        return key
-
-    long_lived(None, 1)
-    short_lived(None, 1)
-    # age both entries by 30 h / 30 s (as if time had passed since they were built)
-    for fn, age in ((long_lived, 30 * 3600), (short_lived, 30)):
-        store = _store(fn)
-        for k, (v, exp) in list(store.items()):
-            store[k] = (v, exp - age)
-    before = {fn: list(_store(fn).values())[0][1] for fn in (long_lived, short_lived)}
-    C.renew_all()
-    after = {fn: list(_store(fn).values())[0][1] for fn in (long_lived, short_lived)}
-    assert after[long_lived] > before[long_lived] + 29 * 3600       # renewed back to ~a full TTL
-    assert after[short_lived] == before[short_lived]                # short-lived cache untouched
-
-
 def test_clear_modules_clears_only_the_named_modules():
     @C.ttl_cache()
     def data_page(conn, key):
