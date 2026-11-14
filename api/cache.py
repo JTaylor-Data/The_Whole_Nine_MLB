@@ -119,8 +119,19 @@ def ttl_cache(ttl_seconds=DEFAULT_TTL_SECONDS):
             for key in [k for k in store if not _is_past_season_key(k, current_season)]:
                 store.pop(key, None)
 
+        def renew():
+            """Push every still-valid entry's expiry out by a full TTL. Used by the warm-up: the
+            nightly refresh only rebuilds entries that have already expired, so entries built at
+            a given time expired 36 h later and stayed cold until the next refresh."""
+            now = time.monotonic()
+            for key, (value, expires_at) in list(store.items()):
+                if now < expires_at:
+                    store[key] = (value, now + _ttl_for(key, ttl_seconds))
+
         wrapper.clear = clear
         wrapper.clear_current = clear_current
+        if ttl_seconds >= DEFAULT_TTL_SECONDS:
+            wrapper.renew = renew
         _registry.append(wrapper)
         return wrapper
 
@@ -169,6 +180,24 @@ def ttl_cache_all_args(ttl_seconds=DEFAULT_TTL_SECONDS):
         return wrapper
 
     return decorator
+
+
+def renew_all():
+    """Extend every long-lived entry (see _store lifetimes above); never touches expired ones or the
+    short-lived caches of live external data."""
+    for cached_fn in _registry:
+        renew = getattr(cached_fn, "renew", None)
+        if renew is not None:
+            renew()
+
+
+def clear_modules(module_prefixes):
+    """Clear every cache defined in the named modules. For data the daily pull refreshes without
+    new pitches arriving (schedule, rosters, prospects): their caches used to be refreshed only by
+    the 36 h TTL running out, which cache renewal now prevents."""
+    for cached_fn in _registry:
+        if getattr(cached_fn, "__module__", "").startswith(tuple(module_prefixes)):
+            cached_fn.clear()
 
 
 def clear_all():

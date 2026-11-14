@@ -26,7 +26,7 @@ META_PATH = MODELS_DIR / "location_plus_v2_meta.json"
 RV_PATH = V2_ARTIFACTS_DIR / "run_value_table.json"
 
 MIN_PITCHES = 100
-_TTL = 600
+_TTL = 7 * 24 * 3600  # was 600
 _cache = {}
 
 _QUERY_COLS = ["pitcher_id", "plate_x", "plate_z", "balls", "strikes",

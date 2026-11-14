@@ -45,7 +45,7 @@ V2_META_PATH = MODELS_DIR / "location_plus_v2_meta.json"
 
 MIN_PITCHES = 300
 MIN_PITCHES_2020 = 111
-_TTL = 600
+_TTL = 7 * 24 * 3600  # cleared explicitly by the weekly rescore; was 600
 _cache = {}
 
 _QUERY_COLS = ["pitcher_id", "plate_x", "plate_z", "balls", "strikes",

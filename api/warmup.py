@@ -193,6 +193,11 @@ def _warm(conn, full):
 
     season = CURRENT_SEASON
 
+    # Entries that are still valid get a fresh lifetime: without this a nightly refresh skipped them,
+    # they expired the next afternoon, and the first visitor after that paid to rebuild everything.
+    from api import cache as _cache
+    _cache.renew_all()
+
     if full:
         # Startup/scheduled refresh: full warmup — all model tables, all splits,
         # similar-players pool, career tables, and last 10 leaderboard dates.

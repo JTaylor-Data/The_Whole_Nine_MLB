@@ -133,6 +133,12 @@ def _precompute_tunneling_pairs(season):
                   season, time.monotonic() - started, type(e).__name__, e)
 
 
+# Caches of pages built from tables the daily pull refreshes with or without new pitches.
+DATA_TABLE_CACHE_MODULES = (
+    "api.routers.prospects", "api.routers.team_card", "api.routers.probable_pitchers", "api.routers.playoffs",
+)
+
+
 def _run(full_warmup):
     from pulls.daily import pull_statcast
 
@@ -198,6 +204,10 @@ def _run(full_warmup):
 
         pull_succeeded = True
         _record_pull_finished()
+        # These pages read tables the pull just refreshed (schedule, rosters, prospects, team stats) and
+        # do not depend on new pitches, so the "only clear when pitches arrived" rule below would leave
+        # them stale. They are cheap to rebuild.
+        cache.clear_modules(DATA_TABLE_CACHE_MODULES)
         if new_pitches == 0:
             _status["detail"] = f"No new pitches found - already up to date through {end.isoformat()}."
         else:

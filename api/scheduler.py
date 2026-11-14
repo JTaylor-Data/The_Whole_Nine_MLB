@@ -124,6 +124,18 @@ def _run_rescore(season: int):
         log.error("weekly rescore exception: %s", e)
 
 
+def _renew_loop():
+    """Every 6 hours, give still-valid cache entries a fresh lifetime so nothing a recent warm-up built
+    expires while nobody is looking (the site must be warm for a visitor at any hour)."""
+    from api import cache
+    while True:
+        time.sleep(6 * 3600)
+        try:
+            cache.renew_all()
+        except Exception:
+            log.exception("cache renew failed")
+
+
 def _daily_loop():
     while True:
         time.sleep(_seconds_until_next_run())
@@ -182,4 +194,5 @@ def start():
         pull.start_pull(full_warmup=True)
     log.info("daily refresh scheduled for %s (America/Toronto)", _next_daily_run().isoformat())
     threading.Thread(target=_daily_loop, daemon=True).start()
+    threading.Thread(target=_renew_loop, daemon=True).start()
     threading.Thread(target=_weekly_rescore_loop, daemon=True).start()

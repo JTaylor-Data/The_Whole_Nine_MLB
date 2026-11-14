@@ -34,7 +34,7 @@ COMMIT_TABLE_PATH = (
 )
 
 MIN_SEASON_PITCHES = 100
-_TTL = 600
+_TTL = 7 * 24 * 3600  # cleared explicitly by the weekly rescore; was 600
 _cache = {}
 
 LAG_COLS = lag_feature_columns()

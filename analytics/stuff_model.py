@@ -122,7 +122,7 @@ def _prepare_features(raw_df):
 
 
 _raw_predictions_cache = {}  # (version, season) -> (dataframe, computed_at)
-RAW_PREDICTIONS_CACHE_TTL_SECONDS = 600
+RAW_PREDICTIONS_CACHE_TTL_SECONDS = 7 * 24 * 3600  # cleared explicitly by the pull/rescore; was 600
 
 
 def raw_predictions_if_cached(season):
