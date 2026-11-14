@@ -97,6 +97,15 @@ def _run_rescore(season: int):
         )
         if result.returncode == 0:
             log.info("weekly rescore complete:\n%s", result.stdout[-2000:])
+            # The player-page tables (Stuff+, Location+, Tunneling+ and everything derived from them) are
+            # cached on top of the raw predictions, so they must go too or the new scores would only appear
+            # after the next pull with new pitches. The warm-up below rebuilds them.
+            try:
+                from api import cache as _api_cache
+                from config.model_policy import CURRENT_SEASON as _SEASON
+                _api_cache.clear_current_season(_SEASON)
+            except Exception:
+                log.exception("clearing the player-page caches after the rescore failed")
             # Invalidate model raw-predictions caches so next warmup/request
             # picks up the newly written parquets.
             try:

@@ -165,6 +165,54 @@ def _inject_all_parquets(seasons):
         _inject_location_parquet(season)
 
 
+def _warm_featured_players(conn, season, n_by_war=5, n_performers=4):
+    """The player page is the landing page, so the players a visitor is most likely to open are warmed
+    completely: the page payload for all three splits, similar players, last five games, pitch
+    locations / hit zones, rolling xwOBA. They are today's top performers (the page opens on the
+    first) and the leaders in WAR. Bounded (about 14 players, ~4 MB of cache each: warming 55 added 233 MB locally) so it cannot
+    threaten the 1 GB machine; each player is guarded so one failure doesn't stop the rest."""
+    from api.routers import heatmaps as _hm, hitzones as _hz, players as _pl, similar_players as _sp
+    from api.routers.top_performers import _leaderboard
+
+    wanted = []  # (player_id, role), most important first
+    latest = conn.execute("SELECT MAX(game_date) FROM games").fetchone()[0]
+    if latest:
+        for e in (_leaderboard(conn, latest).get("entries") or [])[:n_performers]:
+            wanted.append((int(e["player_id"]), e.get("role")))
+    roles = _pl._pitcher_roles(conn, season)
+    for col, role in (("war_batting", "batter"), ("war_pitching", "pitcher")):
+        rows = conn.execute(
+            f"SELECT player_id FROM player_advanced_stats WHERE season = ? AND {col} IS NOT NULL "
+            f"ORDER BY {col} DESC LIMIT ?", (season, n_by_war)).fetchall()
+        wanted += [(int(r[0]), role) for r in rows]
+    seen, done = set(), 0
+    for pid, role in wanted:
+        if role not in ("pitcher", "batter") or (pid, role) in seen:
+            continue
+        seen.add((pid, role))
+        if role == "pitcher" and pid not in roles.index:
+            continue
+        try:
+            for split in ("ALL", "L", "R"):
+                for _ in _pl._build_player_steps(conn, pid, role, split, season):
+                    pass
+            _pl._last_5_games(conn, season, pid, role)
+            _sp.get_similar_players(pid, role=role, season=season, top_n=3, conn=conn)
+            if role == "pitcher":
+                for hand in ("L", "R"):
+                    _hm._pitch_location_summary(conn, season, pid, hand)
+            else:
+                for split in ("ALL", "L", "R"):
+                    _hz._hit_zone_summary(conn, season, pid, split)
+                _pl.get_rolling_xwoba(pid, season=season, conn=conn)
+        except Exception as e:
+            log.warning("featured-player warm-up failed for %s/%s: %s", pid, role, e)
+        done += 1
+        if done % 10 == 0:
+            _trim_memory()
+    log.info("warmed %d featured player pages", done)
+
+
 def _warm(conn, full):
     """`full=True` (server startup - a one-time cost, worth spending fully)
     warms every split. `full=False` (after a "Refresh data" click, which a
@@ -199,154 +247,111 @@ def _warm(conn, full):
     _cache.renew_all()
 
     if full:
-        # Startup/scheduled refresh: full warmup — all model tables, all splits,
-        # similar-players pool, career tables, and last 10 leaderboard dates.
-
-        # Pre-check disk for complete-season percentile pools. This is a fast
-        # read-only scan; missing pools will be built lazily on first request
-        # and persisted so subsequent restarts don't rebuild them.
-        _step("start:preload_complete_seasons")
+        # Startup/scheduled refresh: full warm-up. Ordered so what the player page (the landing
+        # page) needs comes first, and every phase is guarded: one failing step is logged and the
+        # rest still run (an exception used to abort everything after it, leaving the site cold
+        # until the next refresh).
         from analytics.percentile_cache import preload_complete_seasons
-        preload_complete_seasons(conn)
-        _step("end:preload_complete_seasons")
-
-        # Only the CURRENT season's parquets are injected eagerly here -
-        # it's needed immediately by the steps right below. Past seasons
-        # used to be injected here too (6 seasons' worth, ~230MB retained
-        # for the rest of the process's life, every boot) even though
-        # nobody necessarily looks at any given past season this session.
-        # Each model's _raw_predictions() now has its own lazy fallback to
-        # read a season's parquet directly on a cache miss (see
-        # analytics/score_parquet_cache.py), so past seasons load on
-        # whichever request actually needs them instead of all at once.
-        _step("start:inject_all_parquets")
-        _inject_all_parquets([season])
-        _step("end:inject_all_parquets")
-
-        _step("start:stuff_plus_table")
-        _stuff_plus_table(conn, season)
-        _step("end:stuff_plus_table")
-        _step("start:stuff_plus_by_stand_table")
-        _stuff_plus_by_stand_table(conn, season)
-        _step("end:stuff_plus_by_stand_table")
-        _step("start:pitcher_roles")
-        _pitcher_roles(conn, season)
-        _step("end:pitcher_roles")
-        _step("start:league_hr_fb")
-        _league_hr_fb(conn, season)
-        _step("end:league_hr_fb")
-        _step("start:deception_raw_predictions")
-        _deception_raw_predictions_table(conn, DECEPTION_REPORT_SEASON)
-        _step("end:deception_raw_predictions")
-        _step("start:v3_raw_predictions")
-        _v3_raw_predictions_table(conn, season)
-        _step("end:v3_raw_predictions")
-        _step("start:location_raw_predictions")
-        _location_raw_predictions_table(conn, season)
-        _step("end:location_raw_predictions")
-        _step("start:stuff_leaderboard")
-        _stuff_leaderboard(conn, season)
-        _step("end:stuff_leaderboard")
-        _step("start:cached_rows_and_ranks")
-        _cached_rows_and_ranks(conn, season)
-        _step("end:cached_rows_and_ranks")
-        _step("start:cached_sos")
-        _cached_sos(conn, season)
-        _step("end:cached_sos")
-        for split in SPLITS:
-            _step(f"start:pitcher_pool[{split}]")
-            _pitcher_pool(conn, season, split)
-            _step(f"end:pitcher_pool[{split}]")
-            _step(f"start:batter_pool[{split}]")
-            _batter_pool(conn, season, split)
-            _step(f"end:batter_pool[{split}]")
-            _step(f"start:league_avg_batter_row[{split}]")
-            _league_avg_batter_row(conn, season, split)
-            _step(f"end:league_avg_batter_row[{split}]")
-            _step(f"start:pitcher_league_avg_row[{split}]")
-            _pitcher_league_avg_row(conn, season, split)
-            _step(f"end:pitcher_league_avg_row[{split}]")
-            _step(f"start:pitcher_pool_unqualified[{split}]")
-            _pitcher_pool_unqualified(conn, season, split)
-            _step(f"end:pitcher_pool_unqualified[{split}]")
-            _trim_memory()
-        for split in ("L", "R"):
-            _step(f"start:league_command_pool[{split}]")
-            _league_command_pool(conn, season, split)
-            _step(f"end:league_command_pool[{split}]")
-            _trim_memory()
-        _step("start:similarity_pools")
-        _similarity_pool_hitters(conn)
-        _similarity_pool_pitchers(conn)
-        _pitcher_hands(conn)
-        _pitcher_arsenal_pool(conn)
-        _trim_memory()
-        _step("end:similarity_pools")
-        # Past-season career tables (Stuff+/Tunneling+/Location+ for every
-        # season 2021-current) used to be pre-built for every past season
-        # here, at every boot - the other half of the ~230MB this warmup
-        # used to hold permanently (see the parquet-injection comment
-        # above). They're not needed unless someone actually opens a
-        # career page for that season, and when they do, _raw_predictions'
-        # new lazy parquet fallback makes that first request fast (a file
-        # read, not live LightGBM scoring) - so this no longer pre-builds
-        # them eagerly; they load on demand instead.
-        _step("start:career_dicts")
-        _stuff_dict(conn, season)
-        _tunneling_dict(conn, season)
-        _location_dict(conn, season)
-        _deception_dict(conn)
-        _step("end:career_dicts")
-        _step("start:standings")
-        _standings(conn, season)
-        _step("end:standings")
-        _step("start:all_players")
-        _all_players(conn, season)
-        _step("end:all_players")
-        _step("start:all_pitcher_arm_angles")
-        _all_pitcher_arm_angles(conn, season)
-        _step("end:all_pitcher_arm_angles")
-        _step("start:pitcher_page_season_pools")
-        _peer_movement_table(conn, season)
-        for hand in ("L", "R"):
-            _approach_angle_pool(conn, season, hand)
-        from api.routers.trends import _league_averages_cached
-        for role in ("pitcher", "batter"):
-            _league_averages_cached(conn, role, season)
-        _step("end:pitcher_page_season_pools")
-        # First-request builds the page endpoints would otherwise pay once per refresh:
-        # the Career page's current-season league scans, the batter page's league swing
-        # profile, and the Stuff+ leaderboard under the exact (season, n) keys the
-        # frontend asks for (the key includes n, so warming the default did not cover them).
-        _step("start:first_request_builds")
         from api.routers.career import (
             _league_hr_fb as _career_league_hr_fb, _season_batter_hr_counts, _season_pitcher_k_counts,
         )
-        from api.routers.players import _league_swing_profile
+        from api.routers.players import _league_avg_xwoba, _league_swing_profile
+        from api.routers.prospects import _farm_rankings, _teams_with_prospects, _top100
         from api.routers.stuff_model_report import _stuff_leaderboard_overall
-        _career_league_hr_fb(conn, season)
-        _season_pitcher_k_counts(conn, season)
-        _season_batter_hr_counts(conn, season)
-        _league_swing_profile(conn, season)
-        for n in (10, 15):
-            _stuff_leaderboard_overall(conn, season, n)
-        from api.routers.players import _league_avg_xwoba
         from api.routers.tunneling_report import _v3_leaderboard
-        _league_avg_xwoba(conn, season)
-        _v3_leaderboard(conn, season)
-        _step("end:first_request_builds")
-        # Warm last 10 game dates for the "Top performer" badge on player pages.
-        _step("start:leaderboard_10_dates")
-        recent_dates = [r[0] for r in conn.execute(
-            "SELECT DISTINCT game_date FROM games ORDER BY game_date DESC LIMIT 10"
-        ).fetchall()]
-        for d in recent_dates:
-            try:
-                _leaderboard(conn, d)
-            except Exception as e:
-                log.warning("_leaderboard(%s) failed: %s", d, e)
+        from api.routers.trends import _league_averages_cached
+
+        def phase_inputs():
+            # Disk check for complete-season percentile pools (missing ones are built lazily).
+            preload_complete_seasons(conn)
+            # Only the CURRENT season's parquets are injected eagerly; past seasons load on demand.
+            _inject_all_parquets([season])
+
+        def phase_player_page_core():
+            _stuff_plus_table(conn, season)
+            _stuff_plus_by_stand_table(conn, season)
+            _pitcher_roles(conn, season)
+            _league_hr_fb(conn, season)
+            _all_players(conn, season)
+            for split in SPLITS:
+                _pitcher_pool(conn, season, split)
+                _batter_pool(conn, season, split)
+                _league_avg_batter_row(conn, season, split)
+                _pitcher_league_avg_row(conn, season, split)
+                _pitcher_pool_unqualified(conn, season, split)
+                _trim_memory()
+
+        def phase_player_page_season_tables():
+            for split in ("L", "R"):
+                _league_command_pool(conn, season, split)
+            _all_pitcher_arm_angles(conn, season)
+            _peer_movement_table(conn, season)
+            for hand in ("L", "R"):
+                _approach_angle_pool(conn, season, hand)
+            _league_swing_profile(conn, season)
+            _league_avg_xwoba(conn, season)
+            _similarity_pool_hitters(conn)
+            _similarity_pool_pitchers(conn)
+            _pitcher_hands(conn)
+            _pitcher_arsenal_pool(conn)
             _trim_memory()
-        _step("end:leaderboard_10_dates")
+
+        def phase_landing_inputs():
+            _standings(conn, season)
+            _cached_rows_and_ranks(conn, season)
+            _cached_sos(conn, season)
+            # Last 10 game dates: the landing page opens on the latest day's top performer, and the
+            # "top performer" badge on player pages needs these.
+            for d in [r[0] for r in conn.execute(
+                    "SELECT DISTINCT game_date FROM games ORDER BY game_date DESC LIMIT 10").fetchall()]:
+                try:
+                    _leaderboard(conn, d)
+                except Exception as e:
+                    log.warning("_leaderboard(%s) failed: %s", d, e)
+                _trim_memory()
+
+        def phase_featured_players():
+            _warm_featured_players(conn, season)
+
+        def phase_models_and_leaderboards():
+            _deception_raw_predictions_table(conn, DECEPTION_REPORT_SEASON)
+            _v3_raw_predictions_table(conn, season)
+            _location_raw_predictions_table(conn, season)
+            _stuff_leaderboard(conn, season)
+            for n in (10, 15):
+                _stuff_leaderboard_overall(conn, season, n)
+            _v3_leaderboard(conn, season)
+            _stuff_dict(conn, season)
+            _tunneling_dict(conn, season)
+            _location_dict(conn, season)
+            _deception_dict(conn)
+            _trim_memory()
+
+        def phase_other_pages():
+            _career_league_hr_fb(conn, season)
+            _season_pitcher_k_counts(conn, season)
+            _season_batter_hr_counts(conn, season)
+            for role in ("pitcher", "batter"):
+                _league_averages_cached(conn, role, season)
+            _top100(conn, season)
+            _farm_rankings(conn, season)
+            _teams_with_prospects(conn, season)
+
+        for label, fn in (
+            ("inputs", phase_inputs),
+            ("player_page_core", phase_player_page_core),
+            ("player_page_season_tables", phase_player_page_season_tables),
+            ("landing_inputs", phase_landing_inputs),
+            ("featured_players", phase_featured_players),
+            ("models_and_leaderboards", phase_models_and_leaderboards),
+            ("other_pages", phase_other_pages),
+        ):
+            _step(f"start:{label}")
+            try:
+                fn()
+            except Exception:
+                log.exception("warm-up phase %s failed (continuing with the rest)", label)
+            _step(f"end:{label}")
         if _INSTRUMENT:
             mods = {m: (m in sys.modules) for m in ("lightgbm", "sklearn", "shap")}
             print(f"BOOTSTEP sys_modules {mods} rss={_rss_mb():.1f}MB", flush=True, file=sys.stderr)

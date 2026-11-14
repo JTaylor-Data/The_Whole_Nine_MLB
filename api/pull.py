@@ -135,7 +135,7 @@ def _precompute_tunneling_pairs(season):
 
 # Caches of pages built from tables the daily pull refreshes with or without new pitches.
 DATA_TABLE_CACHE_MODULES = (
-    "api.routers.prospects", "api.routers.team_card", "api.routers.probable_pitchers", "api.routers.playoffs",
+    "api.routers.team_card", "api.routers.probable_pitchers", "api.routers.playoffs",
 )
 
 
@@ -199,6 +199,8 @@ def _run(full_warmup):
                 from pulls.daily import pull_prospects, pull_prospect_scouting
                 pull_prospects.run(season)
                 pull_prospect_scouting.run()
+                # Rankings just changed: drop the cached prospect pages (rebuilt by the warm-up below).
+                cache.clear_modules(("api.routers.prospects",))
             except Exception as _pe:
                 log.warning("prospect pull failed (non-fatal): %s", _pe)
 
@@ -232,34 +234,17 @@ def _run(full_warmup):
     try:
         log.info("refreshing computed stats...")
         _status["detail"] = "Refreshing computed stats..."
-        # Only clear caches when this cycle actually found new data -
-        # unconditionally clearing on every full_warmup run (every boot,
-        # every scheduled 6am refresh) defeated the point of the
-        # disk-persisted percentile pools: every restart threw them away
-        # and paid the full rebuild cost again, and a crash mid-warmup
-        # just repeated the same expensive clear+rebuild on the next boot.
-        # pull_succeeded=False (new_pitches stays 0) correctly leaves
-        # existing caches alone - we don't know anything changed, so
-        # don't act like it did.
-        if full_warmup and not POSTSEASON_MODE and new_pitches > 0:
-            # Scheduled/startup refresh with real new data: clear
-            # everything including model caches, then do a full warmup
-            # (includes L/R splits, similar players, etc.)
+        # Every full refresh whose pull succeeded (the daily 4 AM run, and a boot that pulls) empties
+        # the CURRENT season's caches - with or without new pitches, in every season phase - and the
+        # warm-up below rebuilds them, so the player pages are rebuilt from the data every single day.
+        # Finished seasons are untouched (unchanged, and slow to rebuild on the small machine), as are
+        # the percentile pools persisted on disk. A failed pull leaves the existing caches alone.
+        if full_warmup and pull_succeeded:
             from analytics import stuff_model
 
-            # Only the current season's entries: finished seasons are unchanged
-            # and rebuilding them is slow on the small production machine.
             cache.clear_current_season(CURRENT_SEASON)
             stuff_model.clear_cache(CURRENT_SEASON)
             boxscore.clear_cache()
-        elif full_warmup and POSTSEASON_MODE and new_pitches > 0:
-            # Postseason: RS model scores are final — don't nuke and recompute them.
-            # Only clear daily-data caches that change with each new postseason game.
-            boxscore.clear_cache()
-            from api.routers.top_performers import _leaderboard
-            from api.routers.standings import _standings
-            _leaderboard.clear()
-            _standings.clear()
         elif not full_warmup and new_pitches > 0:
             # Manual refresh button, and something actually changed: only
             # clear the daily-data caches. Model scoring caches (Stuff+,
@@ -274,9 +259,7 @@ def _run(full_warmup):
             boxscore.clear_cache()
             _leaderboard.clear()
             _standings.clear()
-        # else: nothing new (or the pull failed) - skip clearing, just
-        # warm whatever's cold below (first boot ever, or a key that
-        # expired on its own TTL).
+        # else: manual refresh with nothing new, or the pull failed - skip clearing, just warm what is cold.
         # Only when this pull injected new pitches: the precompute loads a
         # full season of pitches, which is memory-heavy, and the readers use
         # the committed parquet whenever it exists.
