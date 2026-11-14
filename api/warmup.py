@@ -165,11 +165,11 @@ def _inject_all_parquets(seasons):
         _inject_location_parquet(season)
 
 
-def _warm_featured_players(conn, season, n_by_war=5, n_performers=4):
+def _warm_featured_players(conn, season, n_by_war=0, n_performers=1):
     """The player page is the landing page, so the players a visitor is most likely to open are warmed
     completely: the page payload for all three splits, similar players, last five games, pitch
     locations / hit zones, rolling xwOBA. They are today's top performers (the page opens on the
-    first) and the leaders in WAR. Bounded (about 14 players, ~4 MB of cache each: warming 55 added 233 MB locally) so it cannot
+    first) and the leaders in WAR. Bounded (only the landing player by default: warming 14 players ran the 1 GB production machine out of memory) so it cannot
     threaten the 1 GB machine; each player is guarded so one failure doesn't stop the rest."""
     from api.routers import heatmaps as _hm, hitzones as _hz, players as _pl, similar_players as _sp
     from api.routers.top_performers import _leaderboard
@@ -337,9 +337,9 @@ def _warm(conn, full):
             ("player_page_core", phase_player_page_core),
             ("player_page_season_tables", phase_player_page_season_tables),
             ("landing_inputs", phase_landing_inputs),
-            ("featured_players", phase_featured_players),
             ("models_and_leaderboards", phase_models_and_leaderboards),
             ("other_pages", phase_other_pages),
+            ("featured_players", phase_featured_players),
         ):
             _step(f"start:{label}")
             try:
