@@ -82,7 +82,8 @@ def _cf(v, decimals=2):
 
 
 def _per_season_teams_bulk(conn, player_id, is_pitcher):
-    """One query returning {season: team_id} for all of a player's seasons."""
+    """One query returning {season: [team_id, ...]} for all of a player's seasons: every team he
+    played for that season, in the order he joined them (a traded player has more than one)."""
     player_col = "pitcher_id" if is_pitcher else "batter_id"
     if is_pitcher:
         team_expr = "CASE WHEN p.inning_topbot = 'Top' THEN CAST(g.home_team AS INTEGER) ELSE CAST(g.away_team AS INTEGER) END"
@@ -90,25 +91,26 @@ def _per_season_teams_bulk(conn, player_id, is_pitcher):
         team_expr = "CASE WHEN p.inning_topbot = 'Top' THEN CAST(g.away_team AS INTEGER) ELSE CAST(g.home_team AS INTEGER) END"
 
     rows = conn.execute(f"""
-        SELECT p.season, {team_expr} AS team_id, COUNT(*) AS cnt
+        SELECT p.season, {team_expr} AS team_id
         FROM pitches p JOIN games g ON p.game_id = g.game_id
         WHERE p.{player_col} = ?
         GROUP BY p.season, team_id
+        ORDER BY p.season, MIN(g.game_date)
     """, (player_id,)).fetchall()
 
     by_season = {}
-    for season, team_id, cnt in rows:
-        s = int(season)
-        if s not in by_season or cnt > by_season[s][1]:
-            by_season[s] = (int(team_id) if team_id else None, cnt)
-    return {s: v[0] for s, v in by_season.items()}
+    for season, team_id in rows:
+        if team_id:
+            by_season.setdefault(int(season), []).append(int(team_id))
+    return by_season
 
 
-def _team_info(conn, team_id):
-    if not team_id:
-        return {"abbr": "—", "team_id": None}
-    r = conn.execute("SELECT abbreviation FROM teams WHERE team_id = ?", (team_id,)).fetchone()
-    return {"abbr": r[0] if r else str(team_id), "team_id": team_id}
+def _teams_info(conn, team_ids):
+    out = []
+    for team_id in team_ids:
+        r = conn.execute("SELECT abbreviation FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+        out.append({"abbr": r[0] if r else str(team_id), "team_id": team_id})
+    return out
 
 
 def _player_awards(conn, player_id):
@@ -458,8 +460,7 @@ def _pitcher_career(conn, player_id):
 
     rows = []
     for season, grp in df.groupby("season", sort=True):
-        team_id = season_teams.get(int(season))
-        team = _team_info(conn, team_id)
+        teams = _teams_info(conn, season_teams.get(int(season), []))
 
         pa = grp[grp["events"].notna()]
         ip_str, _ = innings_pitched(pa)
@@ -525,8 +526,7 @@ def _pitcher_career(conn, player_id):
 
         row = {
             "season":           int(season),
-            "team_abbr":        team["abbr"],
-            "team_id":          team["team_id"],
+            "teams":            teams,
             "gs":               grp["game_id"].nunique(),
             "ip":               ip_str,
             "ip_dec":           round(ip_dec, 1),
@@ -610,8 +610,7 @@ def _batter_career(conn, player_id):
     awards_by_season = _player_awards(conn, player_id)
     rows = []
     for season, grp in df.groupby("season", sort=True):
-        team_id = season_teams.get(int(season))
-        team = _team_info(conn, team_id)
+        teams = _teams_info(conn, season_teams.get(int(season), []))
 
         pa = grp[grp["events"].notna()]
         k  = int(pa["events"].isin(STRIKEOUT_EVENTS).sum())
@@ -642,8 +641,7 @@ def _batter_career(conn, player_id):
 
         row = {
             "season":       int(season),
-            "team_abbr":    team["abbr"],
-            "team_id":      team["team_id"],
+            "teams":        teams,
             "gp":           grp["game_id"].nunique(),
             "pa":           n_pa,
             "hr":           hr,

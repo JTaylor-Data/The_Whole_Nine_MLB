@@ -11,7 +11,7 @@ Scripts that pull data into `mlb_data.db`. Run from the repo root.
 | `pull_team_stats.py` | Team-card snapshot (in-season only) |
 | `pull_remaining_schedule.py` | Remaining regular-season schedule |
 | `refresh_mlb_stats.py` | Rosters, schedule, news |
-| `pull_prospects.py`, `pull_prospect_scouting.py` | Prospect rankings and scouting (Mondays) |
+| `pull_prospects.py`, `pull_prospect_scouting.py` | Prospect rankings and scouting (weekly: Mondays, or when the stored rankings are over 7 days old) |
 
 ## annual/ (manual: run by hand during or after each season)
 

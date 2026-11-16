@@ -3,39 +3,28 @@ Pulls MLB Pipeline prospect rankings (overall Top 100 + each org's Top 30)
 into the prospects table, then attaches a real season stat line (GP, K%,
 BB%, OPS/ERA) from the official MLB Stats API for each prospect.
 
-There's no official rankings API - MLB Pipeline's rankings pages
-(mlb.com/milb/prospects/<team-slug>) render their tables client-side (the
-first 5 rows are server-rendered for SEO, the rest only appear in the DOM
-after the "Show Full List" button is clicked and React renders from data it
-already fetched on mount - confirmed by inspecting network activity, no new
-request fires on click). That means a plain `requests.get()` only ever sees
-5 rows; this script drives a real (headless) browser with Playwright instead
-and reads the rendered table out of the DOM, same as a human clicking around
-the site would see.
+There's no official rankings API, but each MLB Pipeline rankings page
+(mlb.com/milb/prospects/<team-slug>) ships its full list inside the HTML: a
+`data-init-state` attribute holds the JSON the page's own code renders from
+(only the first 5 rows are drawn until "Show Full List" is clicked, but all
+30 - or 100 - are in that JSON). So a plain HTTP GET per page is enough; no
+browser is needed, which is what lets this run on the hosted machine.
 
-Each prospect's MLBAM person id is recovered from their profile link
-(mlb.com/stories/<slug>-<id>), not from their headshot image (some
-prospects' headshot URLs don't embed an id at all). That id is then used to
-pull real season stats from statsapi.mlb.com at the sportId matching their
-Pipeline-listed level (AAA/AA/A+/A/ROK) - genuinely official numbers, not
-scraped off the rankings page (which has none).
+Each prospect's MLBAM person id comes with the ranking entry. That id is
+then used to pull real season stats from statsapi.mlb.com at the sportId
+matching their Pipeline-listed level (AAA/AA/A+/A/ROK) - genuinely official
+numbers, not scraped off the rankings page (which has none).
 
 Usage:
     python pulls/daily/pull_prospects.py [SEASON]   # defaults to 2026
 
-Rankings pages take a few seconds each to render (31 page loads: Top 100 +
-30 team pages) - that part is inherently sequential (one shared Playwright
-page navigating site to site) and stays the slower half of a run. The
-~900-prospect stat-line lookup against statsapi is a completely
-independent per-player GET, so it runs on a small thread pool (same
-pattern as pull_pitcher_bio.py's bio lookups) instead of one request at a
-time - a real speedup on what used to be "expect this to take several
-minutes" almost entirely from that sequential loop. Upserts, so
-re-running (e.g. after a midseason Pipeline update) just refreshes
-everything. Not wired into the nav's "Refresh data" button -
-rankings/stats don't change day to day the way live games do, so this is
-meant to be run by hand occasionally, same as pull_teams.py.
+31 page loads (Top 100 + 30 team pages), then a ~900-prospect stat-line
+lookup against statsapi on a small thread pool. Upserts, so re-running
+(e.g. after a midseason Pipeline update) just refreshes everything. Run by
+the scheduled refresh (api/pull.py) once a week.
 """
+import html
+import json
 import os
 import re
 import sqlite3
@@ -44,7 +33,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
-from playwright.sync_api import sync_playwright
 
 DB_PATH = os.environ.get("DB_PATH", "mlb_data.db")
 STATSAPI_BASE = "https://statsapi.mlb.com/api/v1"
@@ -90,110 +78,87 @@ TEAM_SLUGS = {
 # some Top 30 prospects are rookie-eligible call-ups already in the majors.
 LEVEL_TO_SPORT_ID = {"AAA": 11, "AA": 12, "A+": 13, "A": 14, "ROK": 16, "MLB": 1}
 
-ID_FROM_STORY_LINK = re.compile(r"-(\d+)$")
-
-ROW_EXTRACT_JS = """
-() => [...document.querySelectorAll('table.rankings__table tbody tr')].map(tr => {
-    const cells = [...tr.children].map(td => td.textContent.trim());
-    const link = tr.querySelector('a[href]');
-    return { cells, href: link ? link.getAttribute('href') : null };
-})
-"""
-
-
-def _mlb_id_from_href(href):
-    if not href:
-        return None
-    m = ID_FROM_STORY_LINK.search(href.split("?")[0])
-    return int(m.group(1)) if m else None
+RANKINGS_URL = "https://www.mlb.com/milb/prospects"
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                         "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
+INIT_STATE = re.compile(r'data-init-state="([^"]*)"')
+RANKINGS_KEY = "getPlayerRankingsFromSelection"
+TOP100_SIZE = 100
+ORG_LIST_SIZE = 30
 
 
 def _is_pitcher(position):
     return position.startswith("RHP") or position.startswith("LHP")
 
 
-def _scrape_table(page, url):
-    """Loads a rankings page, expands it via "Show Full List" if present,
-    and returns the rendered rows as raw cell-text lists."""
-    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    try:
-        page.wait_for_selector("table.rankings__table tbody tr", timeout=15000)
-    except Exception:
-        return []
-    # The table always renders with just its first 5 rows; "Show Full List"
-    # doesn't fetch anything new (confirmed - no request fires on click), it
-    # just reveals rows React already has in memory. Two gotchas found by
-    # trial and error: Playwright's normal page.click() (real pointer
-    # actions) doesn't register with this button's handler in headless mode
-    # - a dispatched MouseEvent does. And the button exists in the DOM (SSR)
-    # before React finishes hydrating and attaches its onClick listener, so
-    # clicking too early is a silent no-op - a short unconditional wait
-    # first, plus a retry if the row count didn't grow, covers both.
-    try:
-        page.wait_for_selector('[data-testid="load-more-button"]', timeout=8000)
-    except Exception:
-        return page.evaluate(ROW_EXTRACT_JS)  # no load-more button - this list already fit in 5 rows
-
-    page.wait_for_timeout(3000)
-    for _ in range(2):
-        page.evaluate("""() => {
-            const btn = document.querySelector('[data-testid="load-more-button"]');
-            if (btn) btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
-        }""")
-        page.wait_for_timeout(2500)
-        if len(page.query_selector_all("table.rankings__table tbody tr")) > 5:
+def _fetch_rankings(session, url, expected):
+    """Returns one page's ranked prospects as dicts, read from the JSON embedded in the HTML.
+    Raises if the page does not carry the full list, so a layout change on mlb.com fails the
+    pull loudly instead of quietly storing a partial ranking."""
+    last_error = None
+    for _ in range(3):
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
             break
-    return page.evaluate(ROW_EXTRACT_JS)
+        except requests.RequestException as e:
+            last_error = e
+    else:
+        raise RuntimeError(f"could not load {url}: {last_error}")
+
+    for m in INIT_STATE.finditer(resp.text):
+        payload = json.loads(html.unescape(m.group(1))).get("payload") or {}
+        for key, entries in (payload.get("ROOT_QUERY") or {}).items():
+            if key.startswith(RANKINGS_KEY):
+                if len(entries) != expected:
+                    raise RuntimeError(f"{url}: expected {expected} ranked prospects, found {len(entries)}")
+                return [_prospect_row(payload, e) for e in entries]
+    raise RuntimeError(f"{url}: no embedded rankings found (page layout changed?)")
+
+
+def _resolve(payload, node):
+    """The embedded JSON stores shared objects once and points at them with {"__ref": key}."""
+    return payload[node["__ref"]] if isinstance(node, dict) and "__ref" in node else node
+
+
+def _prospect_row(payload, entry):
+    entity = entry["playerEntity"]
+    person = _resolve(payload, entity["player"])
+    roster = _resolve(payload, person.get("activeRoster"))
+    sport = _resolve(payload, roster.get("sport")) if roster else None
+    eta = entity.get("eta") or ""
+    return {
+        "mlb_id": int(person["id"]),
+        "rank": int(entry["rank"]),
+        "name": f"{person['useName']} {person['useLastName']}",
+        "position": entity["position"],
+        "level": sport["abbreviation"] if sport else "-",
+        "eta": int(eta) if eta.isdigit() else None,
+        "age": person.get("currentAge"),
+        "height_weight": f"{person['height']} / {person['weight']} lbs",
+        "bats": person.get("batSideCode"),
+        "throws": person.get("pitchHandCode"),
+    }
 
 
 def scrape_rankings(season):
-    """Returns (rows, top100_ranks) - rows is a list of raw prospect dicts
+    """Returns (rows, top100_ranks) - rows is a list of prospect dicts
     (one per org Top 30 appearance), top100_ranks maps mlb_id -> overall rank."""
+    session = requests.Session()
+
+    print("Reading overall Top 100...", end=" ", flush=True)
+    top100_ranks = {r["mlb_id"]: r["rank"] for r in _fetch_rankings(session, RANKINGS_URL, TOP100_SIZE)}
+    print(f"{len(top100_ranks)} ranked players")
+
     rows = []
-    top100_ranks = {}
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page()
-
-        print("Scraping overall Top 100...", end=" ", flush=True)
-        top100 = _scrape_table(page, "https://www.mlb.com/milb/prospects")
-        for r in top100:
-            if len(r["cells"]) < 10:
-                continue
-            mlb_id = _mlb_id_from_href(r["href"])
-            if mlb_id is not None:
-                top100_ranks[mlb_id] = int(r["cells"][0])
-        print(f"{len(top100_ranks)} ranked players")
-
-        for team_name, slug in TEAM_SLUGS.items():
-            print(f"Scraping {team_name} Top 30...", end=" ", flush=True)
-            team_rows = _scrape_table(page, f"https://www.mlb.com/milb/prospects/{slug}")
-            count = 0
-            for r in team_rows:
-                cells = r["cells"]
-                if len(cells) < 10:
-                    continue
-                mlb_id = _mlb_id_from_href(r["href"])
-                if mlb_id is None:
-                    continue
-                rows.append({
-                    "mlb_id": mlb_id,
-                    "team_name": team_name,
-                    "org_rank": int(cells[0]),
-                    "name": cells[1],
-                    "position": cells[2],
-                    "level": cells[4],
-                    "eta": int(cells[5]) if cells[5].isdigit() else None,
-                    "age": int(cells[6]) if cells[6].isdigit() else None,
-                    "height_weight": cells[7],
-                    "bats": cells[8],
-                    "throws": cells[9],
-                })
-                count += 1
-            print(f"{count} rows")
-
-        browser.close()
+    for team_name, slug in TEAM_SLUGS.items():
+        print(f"Reading {team_name} Top 30...", end=" ", flush=True)
+        team_rows = _fetch_rankings(session, f"{RANKINGS_URL}/{slug}", ORG_LIST_SIZE)
+        for r in team_rows:
+            r["team_name"] = team_name
+            r["org_rank"] = r.pop("rank")
+        rows += team_rows
+        print(f"{len(team_rows)} rows")
 
     return rows, top100_ranks
 
@@ -306,12 +271,17 @@ def run(season: int):
         "updated_at=excluded.updated_at",
         db_rows,
     )
+    # Anyone not on a list anymore (graduated, traded off, dropped) still has a row from an earlier
+    # run, with a rank that now belongs to someone else. Every list was read in full above, so
+    # whatever this run did not touch is no longer ranked.
+    dropped = conn.execute("DELETE FROM prospects WHERE season = ? AND updated_at < ?", (season, now)).rowcount
     conn.commit()
     conn.close()
 
     have_stats = sum(1 for row in db_rows if row[16] is not None)
     print(f"\nUpserted {len(db_rows)} prospects ({len(top100_ranks)} on the Top 100, "
           f"{have_stats} with a season stat line).")
+    print(f"Removed {dropped} prospect(s) no longer on any list.")
     if unmatched_teams:
         print(f"  WARNING: {len(unmatched_teams)} team name(s) didn't match the teams table: {sorted(unmatched_teams)}")
     if unmapped_levels:

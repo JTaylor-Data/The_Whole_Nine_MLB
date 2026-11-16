@@ -36,7 +36,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("refresh")
@@ -139,6 +139,25 @@ DATA_TABLE_CACHE_MODULES = (
 )
 
 
+PROSPECT_REFRESH_DAYS = 7
+
+
+def _prospects_due(season) -> bool:
+    """Prospects refresh weekly, on Mondays. They are also due whenever the stored rankings are more
+    than a week old, so a Monday run that failed or never happened (machine down, deploy) is made up
+    at the next scheduled refresh instead of waiting another week."""
+    if date.today().weekday() == 0:
+        return True
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        last = conn.execute("SELECT MAX(updated_at) FROM prospects WHERE season = ?", (season,)).fetchone()[0]
+    finally:
+        conn.close()
+    if last is None:
+        return True
+    return datetime.now(timezone.utc) - datetime.fromisoformat(last) > timedelta(days=PROSPECT_REFRESH_DAYS)
+
+
 def _run(full_warmup):
     from pulls.daily import pull_statcast
 
@@ -191,18 +210,20 @@ def _run(full_warmup):
         except Exception as _me:
             log.warning("refresh_mlb_stats failed (non-fatal): %s", _me)
 
-        # Prospects: skip on manual refresh clicks; weekly on Mondays during scheduled runs.
-        if full_warmup and date.today().weekday() == 0:
-            log.info("updating prospect rankings + scouting (weekly Monday run)...")
+        # Prospects: skip on manual refresh clicks; weekly during scheduled runs.
+        if full_warmup and _prospects_due(season):
+            log.info("updating prospect rankings + scouting (weekly run)...")
             _status["detail"] = "Updating prospect rankings..."
             try:
                 from pulls.daily import pull_prospects, pull_prospect_scouting
                 pull_prospects.run(season)
                 pull_prospect_scouting.run()
-                # Rankings just changed: drop the cached prospect pages (rebuilt by the warm-up below).
+                log.info("prospect rankings + scouting updated")
+            except Exception:
+                log.exception("prospect pull failed (non-fatal; retried at the next scheduled refresh)")
+            finally:
+                # Whatever was stored may have changed: drop the cached prospect pages (rebuilt by the warm-up below).
                 cache.clear_modules(("api.routers.prospects",))
-            except Exception as _pe:
-                log.warning("prospect pull failed (non-fatal): %s", _pe)
 
         pull_succeeded = True
         _record_pull_finished()

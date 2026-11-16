@@ -42,7 +42,7 @@ disk, so a restart or redeploy goes back to whatever was in the image. See
 |---|---|---|
 | Every server start | Full data pull + warm-up, **unless** a pull finished <2h ago (then warm-up only) | `api/scheduler.py` `start()` |
 | Daily 04:00 America/Toronto | Full data pull + warm-up | `api/scheduler.py` `_daily_loop` |
-| Mondays, inside the scheduled pull | Prospect rankings + scouting refresh (uses the server's date, i.e. UTC on Fly) | `api/pull.py` `_run` |
+| Mondays, inside the scheduled pull (also any day the stored rankings are over 7 days old, so a missed Monday is made up) | Prospect rankings + scouting refresh (uses the server's date, i.e. UTC on Fly) | `api/pull.py` `_run` |
 | Sundays 05:00 Toronto | Model rescore for the current season; **skipped unless `SEASON_PHASE=REGULAR_SEASON`** | `api/scheduler.py` `_weekly_rescore_loop` |
 | On demand | "Refresh data" button (`POST /api/admin/pull-data`, light warm-up) and `POST /api/admin/refresh-cache` (clear everything + warm); both need the admin token | `api/main.py` |
 
@@ -58,7 +58,7 @@ Not scheduled at all: the Stats-API/FanGraphs side pulls (section 5).
 | 4 | Upcoming schedule (14 days) | MLB Stats API | `schedule_games` | Includes probable pitchers. |
 | 5 | Remaining schedule | MLB Stats API (`gameType=R`) | `remaining_schedule` | Full replace each run. Powers strength of schedule. |
 | 6 | Rosters, schedule, news | MLB Stats API, MLB.com RSS | `rosters`, `schedule_games`, `news_items` | News `fetched_at` is stamped only when a **new** story is inserted. Summaries come from the Anthropic API only if a key is set; otherwise the RSS blurb is used. |
-| 7 | Prospects (Mondays only) | mlb.com Pipeline ranking pages + Stats API stat lines | `prospects`, `prospect_scouting` | |
+| 7 | Prospects (weekly: Mondays, or when over 7 days old) | mlb.com Pipeline ranking pages + Stats API stat lines | `prospects`, `prospect_scouting` | |
 | 8 | Record completion | - | `/data/pull_state.json` | Written whenever the pull succeeds, even with zero new pitches. This is what the nav's "Refreshed ..." label shows. |
 | 9 | If new pitches arrived: clear caches | - | memory | Now clears only entries involving the current season (or no season); finished seasons' entries are kept. |
 | 10 | If new pitches arrived: tunneling-pairs precompute | local DB | `parquets/tunneling_pairs_<season>.parquet`, `tunneling_totals_<season>.parquet` | Runs in a subprocess (memory is released). |

@@ -40,16 +40,15 @@ function fmtCell(row, col) {
   const boldCls = top10 ? " ct-bold-top10" : "";
 
   if (col.key === "team") {
-    const tid = row.team_id;
-    const abbr = row.team_abbr || "—";
-    if (!tid) return `<td class="ct-left"><span class="ct-team"><span class="ct-team-abbr">${abbr}</span></span></td>`;
-    return `<td class="ct-left">
+    // A traded player has more than one team in a season; they are listed in the order he joined them.
+    const teams = row.teams || [];
+    if (!teams.length) return `<td class="ct-left"><span class="ct-team"><span class="ct-team-abbr">—</span></span></td>`;
+    return `<td class="ct-left"><span class="ct-teams">${teams.map(t => `
       <span class="ct-team">
-        <img class="ct-team-logo" src="https://www.mlbstatic.com/team-logos/${tid}.svg"
+        <img class="ct-team-logo" src="https://www.mlbstatic.com/team-logos/${t.team_id}.svg"
              onerror="this.style.display='none'" alt="">
-        <span class="ct-team-abbr">${abbr}</span>
-      </span>
-    </td>`;
+        <span class="ct-team-abbr">${t.abbr}</span>
+      </span>`).join("")}</span></td>`;
   }
 
   if (col.key === "primary_position") {
