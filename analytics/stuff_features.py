@@ -62,6 +62,7 @@ import pandas as pd
 
 from analytics.metrics import compute_vaa
 from analytics.spin_physics import add_axis_differential, fit_spin_axis_calibration
+from config.qualifiers import MODEL_EXCLUDED
 
 # ---------------------------------------------------------------------------
 # Part A - fastball reference classification (pitcher-season level)
@@ -206,11 +207,10 @@ def merge_pitch_type(df):
 # (extreme, genuinely hard-to-predict movement most Stuff+-style models
 # struggle to grade well), not junk/non-competitive data the way the three
 # above are.
-EXCLUDED_PITCH_TYPES = {"PO", "UN", "EP"}
 
 
 def exclude_junk_pitch_types(df):
-    return df[~df["pitch_type"].isin(EXCLUDED_PITCH_TYPES)]
+    return df[~df["pitch_type"].isin(MODEL_EXCLUDED)]
 
 
 def _arm_side_sign(p_throws):
@@ -432,7 +432,7 @@ def add_haa_residual(df, haa_coefs):
 
 def engineer_features(df, calibrations, fb_ref_df):
     """Full pipeline: merge KC->CU, exclude non-competitive pitch types
-    (PO/UN/EP - see EXCLUDED_PITCH_TYPES), attach hb/ivb, VAA residual,
+    (PO/UN/EP - see MODEL_EXCLUDED), attach hb/ivb, VAA residual,
     spin-axis differential, fastball separation features, coerce
     categoricals, drop rows missing a CORE feature only (never the
     optional/reference-dependent ones - those keep real NaN through to the

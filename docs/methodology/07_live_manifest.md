@@ -56,7 +56,6 @@ Union of:
 - `analytics/location_features.py`
 - `analytics/location_model.py`  (v1 fallback only)
 - `analytics/location_v3_model.py` (ACTIVE: Location+ v3)
-- `analytics/location_v2_model.py` (fallback if v3 meta missing)
 - `analytics/metrics.py`
 - `analytics/percentile_cache.py`
 - `analytics/percentiles.py`
@@ -98,11 +97,7 @@ Union of:
 
 ### Location+ v3 (ACTIVE)
 - `models/location_plus_v3_bip.txt` — BIP LightGBM booster
-- `models/location_plus_v3_meta.json` — version meta (fallback to v2 if missing)
-
-### Location+ v2 (fallback only)
-- `models/location_plus_v2_bip.txt`
-- `models/location_plus_v2_meta.json`
+- `models/location_plus_v3_meta.json` — version meta
 
 ### Tunneling+ v2 (ACTIVE — live scorer)
 - `models/tunneling_plus_v2_bip.txt`
@@ -232,4 +227,4 @@ Files NOT found in the import graph or runtime trace:
 ## Known Issues
 - ND-DEC-01: `/api/deception/meta` returns 404 for v2b; deception scores appear empty (no parquets loaded)
 - Tunneling+ router URLs say `/v3/` but live scorer is `analytics/tunneling_v2_model.py`
-- `analytics/location_v3_model.py` is active; `location_model.py` and `location_v2_model.py` are fallback imports
+- `analytics/location_v3_model.py` is active; Location+ v2 was retired to the local archive (2026-11-15)

@@ -87,11 +87,8 @@ def regular_season_filter(alias: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 # MODEL_EXCLUDED: pitch types the LightGBM models (Stuff+ v4, Location+ v3)
-# do NOT score.  Matches the EXCLUDED_PITCH_TYPES set inside
-# analytics/stuff_features.py::exclude_junk_pitch_types(), plus FA which is
-# a generic fastball alias that the PITCH_TYPE_MAP normalises away before
-# features are computed (so it never reaches the model but should be excluded
-# from any raw-pitch iteration too).
+# do NOT score; analytics/stuff_features.py::exclude_junk_pitch_types()
+# drops exactly this set.
 #
 # AB (auto-batted ball, 3 rows total) and AS (auto-strike, 0 rows) are not in
 # this set because they do not appear in the live DB in any significant count.
@@ -114,12 +111,6 @@ MODEL_EXCLUDED: frozenset = frozenset({
 DISPLAY_EXCLUDED: frozenset = frozenset(MODEL_EXCLUDED | {
     "FA",   # generic fastball alias — normalised to FF in PITCH_TYPE_MAP
 })
-
-# Legacy alias kept for backward compatibility with callers that import
-# EXCLUDED_PITCH_TYPES by name (analytics/splits.py, etc.).  Points to the
-# display-excluded set (superset of model-excluded), which is what UI
-# callers need.
-EXCLUDED_PITCH_TYPES: frozenset = DISPLAY_EXCLUDED
 
 # Pitch-type mapping applied before scoring
 PITCH_TYPE_MAP: dict = {

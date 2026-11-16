@@ -16,7 +16,7 @@ and scoring stay exactly as they are until a separate promotion decision).
    Every pitch that pitcher throws (any type) is then evaluated at THAT
    pitcher's own commit_point_distance. See build_commit_point_table().
 2. **Junk pitch types excluded** (PO/UN/EP) from eligible pairs - same
-   EXCLUDED_PITCH_TYPES set Stuff+ uses (imported, not duplicated, so the
+   MODEL_EXCLUDED set Stuff+ uses (imported, not duplicated, so the
    two models can't silently drift on what counts as "not a real pitch").
    KN stays eligible - a real competitive pitch type, not junk data, same
    reasoning as Stuff+.
@@ -46,7 +46,7 @@ actually in scope for this revision.
 import numpy as np
 import pandas as pd
 
-from analytics.stuff_features import EXCLUDED_PITCH_TYPES
+from config.qualifiers import MODEL_EXCLUDED
 from analytics.tunneling_model import Y0, PLATE_Y, position_at_y, _pairwise_mean_dist
 
 FB_TYPES = ["FF", "SI", "FC"]  # fastball-family shapes eligible as the
@@ -99,7 +99,7 @@ def load_pitches(conn, season, pitcher_id=None):
     """, conn, params=params, chunksize=100_000))
     df = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=RAW_QUERY_COLUMNS)
     df["pitch_type"] = df["pitch_type"].replace({"KC": "CU"})
-    df = df[~df["pitch_type"].isin(EXCLUDED_PITCH_TYPES)]
+    df = df[~df["pitch_type"].isin(MODEL_EXCLUDED)]
     required = ["release_pos_x", "release_pos_z", "vx0", "vy0", "vz0", "ax", "ay", "az", "plate_x", "plate_z"]
     df = df.dropna(subset=required + ["pitch_type"])
     return df

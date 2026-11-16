@@ -13,7 +13,7 @@ All `.py` files in this folder are imported by live API routes. Active model sco
 - `player_page.py` — Player page data assembly
 - `percentiles.py` / `percentile_cache.py` — Percentile computation
 
-Legacy scorers kept for career-page backward compat: `location_model.py`, `location_v2_model.py`, `tunneling_model.py`, `tunneling_v3_model.py`.
+Legacy scorers kept for career-page backward compat: `location_model.py`, `tunneling_model.py`, `tunneling_v3_model.py`.
 
 ## Archive
 

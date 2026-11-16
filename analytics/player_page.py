@@ -16,7 +16,7 @@ from analytics.splits import (
     STRIKEOUT_EVENTS, WALK_EVENTS, HBP_EVENTS, SAC_FLY_EVENTS, NOT_AB_EVENTS,
     _pa_outcome_metrics, _pitch_rate_metrics, _barrel_rate,
 )
-from analytics.stuff_features import EXCLUDED_PITCH_TYPES
+from config.qualifiers import MODEL_EXCLUDED
 
 # Outs recorded per PA-ending event. Statcast has no direct "outs on this
 # play" field, so this is a manual mapping - events not listed (hits, walks,
@@ -224,7 +224,7 @@ def pitcher_pitch_table(conn, season, pitcher_id, stand_filter=None, stuff_plus_
     if df.empty:
         return pd.DataFrame()
     # Excludes the same non-competitive pitch types Stuff+ itself excludes
-    # (EXCLUDED_PITCH_TYPES) - this table is the one that carries stuff_plus
+    # (MODEL_EXCLUDED) - this table is the one that carries stuff_plus
     # per row, so a pitchout/eephus/unclassified row would show real
     # velo/spin/etc stats next to a stuff_plus that no longer exists for
     # that type (it's not in stuff_plus_table's index anymore) rather than
@@ -232,7 +232,7 @@ def pitcher_pitch_table(conn, season, pitcher_id, stand_filter=None, stuff_plus_
     # - pitcher_counting_stats also calls _load() and real counting stats
     # (K/BB/HR/IP) must still include every real pitch, eephus included (an
     # eephus strikeout is still a real strikeout).
-    df = df[~df["pitch_type"].isin(EXCLUDED_PITCH_TYPES)]
+    df = df[~df["pitch_type"].isin(MODEL_EXCLUDED)]
     if df.empty:
         return pd.DataFrame()
     df = _add_flags(df)
@@ -286,13 +286,13 @@ def pitcher_league_avg_row(conn, season, stand_filter=None):
     if stand_filter and stand_filter != "ALL":
         where, params = "WHERE season = ? AND stand = ?", (season, stand_filter)
     # Excludes the same non-competitive pitch types Stuff+ itself excludes
-    # (analytics/stuff_features.py's EXCLUDED_PITCH_TYPES) - this is the
+    # (analytics/stuff_features.py's MODEL_EXCLUDED) - this is the
     # league-average REFERENCE row for the by-pitch-type table Stuff+
     # scores live in, so it should reflect the same population, not a
     # wider one that still includes pitchouts/eephus/unclassified pitches.
-    excl_placeholders = ",".join("?" * len(EXCLUDED_PITCH_TYPES))
+    excl_placeholders = ",".join("?" * len(MODEL_EXCLUDED))
     where += f" AND pitch_type NOT IN ({excl_placeholders})"
-    params = params + tuple(EXCLUDED_PITCH_TYPES)
+    params = params + tuple(MODEL_EXCLUDED)
     # Same SQL-aggregate fix as league_average_batter_row above, for the
     # same reason: materializing a full season's rows as Python objects
     # (via pd.read_sql, regardless of dtype) was itself the real memory
@@ -346,9 +346,9 @@ def movement_plot_data(conn, season, pitcher_id, stand_filter=None):
     df = _load(conn, season, "pitcher_id", pitcher_id, "stand", stand_filter,
                columns=["pitch_type", "pfx_x", "pfx_z", "p_throws"])
     # Same non-competitive pitch types excluded from the pitch table
-    # (EXCLUDED_PITCH_TYPES = pitchouts/eephus/unclassified) - these aren't
+    # (MODEL_EXCLUDED = pitchouts/eephus/unclassified) - these aren't
     # real pitch shapes worth plotting a movement point for.
-    df = df[~df["pitch_type"].isin(EXCLUDED_PITCH_TYPES)]
+    df = df[~df["pitch_type"].isin(MODEL_EXCLUDED)]
     df = df[df["pfx_x"].notna() & df["pfx_z"].notna()].copy()
     if df.empty:
         return df[["pitch_type"]].iloc[:0]

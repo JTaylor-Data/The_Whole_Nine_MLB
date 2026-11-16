@@ -40,9 +40,6 @@ DIAG_DIR = Path(__file__).resolve().parent.parent / "diagnostics" / "location_v3
 META_PATH = MODELS_DIR / "location_plus_v3_meta.json"
 RV_PATH = DIAG_DIR / "count_rv_table.json"
 
-# Fallback to v2 if v3 models not yet trained
-V2_META_PATH = MODELS_DIR / "location_plus_v2_meta.json"
-
 MIN_PITCHES = 300
 MIN_PITCHES_2020 = 111
 _TTL = 7 * 24 * 3600  # cleared explicitly by the weekly rescore; was 600
@@ -110,17 +107,10 @@ def _build_rv_arrays(rv_count, bip_classes):
 
 def _models():
     if "m" not in _cache:
-        if not META_PATH.exists():
-            # Fall back to v2
-            from analytics.location_v2_model import _models as v2_models
-            _cache["m"] = v2_models()
-            _cache["model_version"] = "v2"
-            return _cache["m"]
         _cache["m"] = {
             n: lgb.Booster(model_file=str(MODELS_DIR / f"location_plus_v3_{n}.txt"))
             for n in ("xswing", "xcs", "xwhiff", "xfoul", "bip")
         }
-        _cache["model_version"] = "v3"
     return _cache["m"]
 
 
@@ -229,9 +219,7 @@ def _raw_predictions(conn, season):
     cat_lv = _cat_levels(conn)
     rv_count, bip_classes, rv_arrays = _rv()
     if rv_arrays is None:
-        # Fall back to v2
-        from analytics.location_v2_model import _raw_predictions as v2_raw
-        return v2_raw(conn, season)
+        raise FileNotFoundError(f"Location+ run-value table missing: {RV_PATH}")
 
     rv_hb = _cache.get("rv_hb", 0.36)
     bip_rv_matrix = _cache.get("bip_rv_matrix")

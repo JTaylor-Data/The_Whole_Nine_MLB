@@ -53,7 +53,8 @@ pitch level, and this build follows that same convention exactly.
 import numpy as np
 import pandas as pd
 
-from analytics.stuff_features import EXCLUDED_PITCH_TYPES, exclude_junk_pitch_types, merge_pitch_type
+from analytics.stuff_features import exclude_junk_pitch_types, merge_pitch_type
+from config.qualifiers import MODEL_EXCLUDED
 
 NUMERIC_FEATURES = ["plate_x", "plate_z", "balls", "strikes"]
 CATEGORICAL_FEATURES = ["pitch_type", "stand", "season"]
@@ -75,7 +76,7 @@ RAW_QUERY_COLUMNS = [
 
 def engineer_features(df):
     """Full pipeline: merge KC->CU, exclude non-competitive pitch types
-    (same EXCLUDED_PITCH_TYPES/exclude_junk_pitch_types Stuff+ uses -
+    (same MODEL_EXCLUDED/exclude_junk_pitch_types Stuff+ uses -
     imported, not redefined, so the two models can't silently drift on
     what counts as junk), coerce categoricals, drop rows missing any
     required feature. `df` must already have RAW_QUERY_COLUMNS."""

@@ -120,7 +120,7 @@ def build_pitcher_arsenal_pool(conn, seasons):
     (same junk-pitch-type set Stuff+ uses) and with KC merged into CU (same
     convention as the rest of this page). EXPLORATORY - see module
     docstring for exactly how/why this feeds find_comps()."""
-    from analytics.stuff_features import EXCLUDED_PITCH_TYPES
+    from config.qualifiers import MODEL_EXCLUDED
 
     placeholders = ",".join("?" * len(seasons))
     df = pd.read_sql(f"""
@@ -131,7 +131,7 @@ def build_pitcher_arsenal_pool(conn, seasons):
     if df.empty:
         return pd.Series(dtype=object)
     df["pitch_type"] = df["pitch_type"].replace({"KC": "CU"})
-    df = df[~df["pitch_type"].isin(EXCLUDED_PITCH_TYPES)]
+    df = df[~df["pitch_type"].isin(MODEL_EXCLUDED)]
     totals = df.groupby(["pitcher_id", "season"])["n"].transform("sum")
     df["pct"] = df["n"] / totals
     qualifying = df[df["pct"] >= ARSENAL_MIN_USAGE]
