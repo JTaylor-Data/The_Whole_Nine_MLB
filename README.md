@@ -66,7 +66,7 @@
 
 ## Repo Structure
 ```
-mlb-dashboard/
+The_Whole_Nine_MLB/
 ├── analytics/             [core model + data logic]
 ├── api/                   [FastAPI backend, routers]
 ├── config/                [model policy, thresholds]

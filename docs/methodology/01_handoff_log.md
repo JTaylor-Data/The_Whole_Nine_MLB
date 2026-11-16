@@ -81,7 +81,7 @@ Location+) plus a full player/team/prospect browsing site. Built as a learning p
 piece for baseball analytics job applications — methodology rigor and honest validation matter here
 beyond just shipping features.
 
-**GitHub**: `github.com/JTaylor-Data/mlb-dashboard` (private). All work is on `master`. The repo
+**GitHub**: `github.com/JTaylor-Data/The_Whole_Nine_MLB` (private). All work is on `master`. The repo
 contains the full codebase — large training artifacts and the SQLite DB are gitignored.
 
 ---
