@@ -42,6 +42,9 @@ DB_PATH = os.environ.get("DB_PATH", "mlb_data.db")
 SAVANT_PLAYER_URL = "https://baseballsavant.mlb.com/savant-player/{}"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 MAX_WORKERS = 10
+# The report sits in one section of a ~260 KB page. Only that section is parsed: parsing the
+# whole page for 900 players took over 20 minutes and ~280 MB on the hosted 1 GB machine.
+SECTION_START = re.compile(r"<h2[^>]*>(?:\s*<[^>]+>)*\s*Scouting Report")
 
 
 def _parse_blocks(soup):
@@ -89,7 +92,12 @@ def fetch_scouting(mlb_id):
     prospect has no scouting report on the page at all."""
     resp = requests.get(SAVANT_PLAYER_URL.format(mlb_id), headers=HEADERS, timeout=20)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    page = resp.text
+    start = SECTION_START.search(page)
+    if start is None:
+        return None
+    end = page.find("<h2", start.end())
+    soup = BeautifulSoup(page[start.start():end if end != -1 else len(page)], "html.parser")
 
     blocks = _parse_blocks(soup)
     if not blocks:
