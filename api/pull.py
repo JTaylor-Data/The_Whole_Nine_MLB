@@ -158,92 +158,129 @@ def _prospects_due(season) -> bool:
     return datetime.now(timezone.utc) - datetime.fromisoformat(last) > timedelta(days=PROSPECT_REFRESH_DAYS)
 
 
-def _run(full_warmup):
-    from pulls.daily import pull_statcast
+PROSPECT_SCRIPT_TIMEOUT_SECONDS = 15 * 60
 
-    end = date.today()
-    pull_succeeded = False
-    new_pitches = 0
-    games_result = {"games_updated": 0, "players_updated": 0}
 
-    try:
-        start = EARLIEST_SEASON_START
-
-        log.info("checking Statcast data %s to %s for anything missing...", start, end)
-        # Deliberately doesn't show the full 2021-today range here even
-        # though that IS what's being checked (see module docstring) - a
-        # date that old reads as "why is this rescanning years of history"
-        # even though the ingested_dates skip-list makes that check fast.
-        # The real, current-day status is "is today's/recent data in yet."
-        _status["detail"] = "Checking for new pitch data..."
-        pitches_result = pull_statcast.run(start.isoformat(), end.isoformat())
-        new_pitches = pitches_result["rows_inserted"]
-
-        log.info("updating players/games reference data...")
-        _status["detail"] = "Updating players/games reference data..."
-        recent_cutoff = (end - timedelta(days=PLAYERS_GAMES_RECENT_WINDOW_DAYS)).isoformat()
-        games_result = pull_players_games.run(since_date=recent_cutoff)
-
-        season = CURRENT_SEASON
-
-        if not POSTSEASON_MODE:
-            log.info("updating team stats...")
-            _status["detail"] = "Updating team stats..."
-            pull_team_stats.run(season)
+def _refresh_prospects(season):
+    """Rankings, then scouting reports. Each runs as its own process with a time limit, so a hang or
+    crash cannot stall or take down the site, and its memory is returned when it exits. Each script
+    writes its table in one transaction at the very end, so a run that fails or is stopped leaves the
+    data already stored untouched. Scouting still runs when rankings failed (it works from the
+    prospects already stored). Raises after both have had their turn if either failed."""
+    scripts_dir = Path(__file__).resolve().parent.parent / "pulls" / "daily"
+    errors = []
+    for script, args in (("pull_prospects.py", [str(season)]), ("pull_prospect_scouting.py", [])):
+        started = time.monotonic()
+        try:
+            result = subprocess.run(
+                [sys.executable, str(scripts_dir / script), *args],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=PROSPECT_SCRIPT_TIMEOUT_SECONDS, cwd=str(scripts_dir.parent.parent),
+                env={**os.environ, "DB_PATH": str(DB_PATH), "PYTHONIOENCODING": "utf-8"},
+            )
+        except subprocess.TimeoutExpired:
+            errors.append(f"{script} stopped after {PROSPECT_SCRIPT_TIMEOUT_SECONDS}s")
+            continue
+        elapsed = time.monotonic() - started
+        if result.returncode == 0:
+            log.info("%s ok in %.0fs: %s", script, elapsed, " | ".join(result.stdout.strip().splitlines()[-4:]))
         else:
-            log.info("postseason mode — skipping team stats (RS records frozen)")
+            errors.append(f"{script} exit {result.returncode} after {elapsed:.0f}s: {result.stderr.strip()[-1500:]}")
+    # Whatever was stored may have changed: drop the cached prospect pages (rebuilt by the warm-up).
+    cache.clear_modules(("api.routers.prospects",))
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
-        log.info("updating upcoming schedule / probable pitchers...")
-        _status["detail"] = "Updating upcoming schedule..."
+
+def _step(label, fn, failed):
+    """Runs one refresh step. A step that raises is logged and recorded, and the rest still run: each
+    step refreshes its own tables from its own source, so one source being down costs only that
+    step, which keeps the data it already had. Returns the step's result, or None if it failed."""
+    log.info("%s...", label)
+    _status["detail"] = f"{label[0].upper()}{label[1:]}..."
+    try:
+        return fn()
+    except Exception:
+        log.exception("refresh step failed (the rest continue): %s", label)
+        failed.append(label)
+        return None
+
+
+def _pull_steps(full_warmup, season):
+    """Runs every refresh step and returns (pull_succeeded, new_pitches, summary)."""
+    end = date.today()
+    failed = []
+
+    def pitches():
+        # Checks the full history every time (see module docstring); the ingested_dates skip-list
+        # makes that cheap. Imported here because it pulls in pybaseball (see the note above).
+        from pulls.daily import pull_statcast
+        return pull_statcast.run(EARLIEST_SEASON_START.isoformat(), end.isoformat())
+
+    def players_games():
+        recent_cutoff = (end - timedelta(days=PLAYERS_GAMES_RECENT_WINDOW_DAYS)).isoformat()
+        return pull_players_games.run(since_date=recent_cutoff)
+
+    def upcoming_schedule():
         from data.mlb_stats_api import schedule as _mlb_schedule
         _mlb_schedule(end.isoformat(), (end + timedelta(days=14)).isoformat(), db_path=str(DB_PATH))
 
-        log.info("updating remaining schedule (SOS/playoffs)...")
-        _status["detail"] = "Updating remaining schedule..."
-        pull_remaining_schedule.run(season)
+    def rosters():
+        from pulls.daily.refresh_mlb_stats import run as _refresh_mlb_stats
+        _refresh_mlb_stats(season=season, skip_news=False, postseason=POSTSEASON_MODE)
 
-        log.info("updating rosters + schedule via MLB Stats API...")
-        _status["detail"] = "Updating rosters/schedule..."
-        try:
-            from pulls.daily.refresh_mlb_stats import run as _refresh_mlb_stats
-            _refresh_mlb_stats(season=season, skip_news=False, postseason=POSTSEASON_MODE)
-        except Exception as _me:
-            log.warning("refresh_mlb_stats failed (non-fatal): %s", _me)
-
-        # Prospects: skip on manual refresh clicks; weekly during scheduled runs.
+    def prospects():
+        # Skipped on manual refresh clicks; weekly during scheduled runs.
         if full_warmup and _prospects_due(season):
-            log.info("updating prospect rankings + scouting (weekly run)...")
-            _status["detail"] = "Updating prospect rankings..."
-            try:
-                from pulls.daily import pull_prospects, pull_prospect_scouting
-                pull_prospects.run(season)
-                pull_prospect_scouting.run()
-                log.info("prospect rankings + scouting updated")
-            except Exception:
-                log.exception("prospect pull failed (non-fatal; retried at the next scheduled refresh)")
-            finally:
-                # Whatever was stored may have changed: drop the cached prospect pages (rebuilt by the warm-up below).
-                cache.clear_modules(("api.routers.prospects",))
+            _refresh_prospects(season)
 
-        pull_succeeded = True
+    pitches_result = _step("checking for new pitch data", pitches, failed)
+    # The pitch check is what makes this a successful pull: it decides whether the caches are rebuilt
+    # and whether the next boot may skip pulling. The other steps only refresh their own tables.
+    pull_succeeded = pitches_result is not None
+    new_pitches = pitches_result["rows_inserted"] if pull_succeeded else 0
+    games_result = (_step("updating players/games reference data", players_games, failed)
+                    or {"games_updated": 0, "players_updated": 0})
+    if not POSTSEASON_MODE:
+        _step("updating team stats", lambda: pull_team_stats.run(season), failed)
+    else:
+        log.info("postseason mode - skipping team stats (RS records frozen)")
+    _step("updating upcoming schedule / probable pitchers", upcoming_schedule, failed)
+    _step("updating remaining schedule (SOS/playoffs)", lambda: pull_remaining_schedule.run(season), failed)
+    _step("updating rosters + schedule via MLB Stats API", rosters, failed)
+    _step("updating prospect rankings + scouting", prospects, failed)
+
+    if pull_succeeded:
         _record_pull_finished()
-        # These pages read tables the pull just refreshed (schedule, rosters, prospects, team stats) and
-        # do not depend on new pitches, so the "only clear when pitches arrived" rule below would leave
-        # them stale. They are cheap to rebuild.
-        cache.clear_modules(DATA_TABLE_CACHE_MODULES)
-        if new_pitches == 0:
-            _status["detail"] = f"No new pitches found - already up to date through {end.isoformat()}."
-        else:
-            _status["detail"] = (
-                f"Up to date through {end.isoformat()}: {new_pitches:,} new pitches, "
-                f"{games_result['games_updated']} game(s) updated, "
-                f"{games_result['players_updated']} player(s) checked."
-            )
-        log.info("pull done - %s", _status["detail"])
+    # These pages read tables the steps above refresh (schedule, rosters, team stats) and do not depend
+    # on new pitches, so the "only clear when pitches arrived" rule below would leave them stale. They
+    # are cheap to rebuild.
+    cache.clear_modules(DATA_TABLE_CACHE_MODULES)
+    if not pull_succeeded:
+        summary = "Pitch data check failed."
+    elif new_pitches == 0:
+        summary = f"No new pitches found - already up to date through {end.isoformat()}."
+    else:
+        summary = (
+            f"Up to date through {end.isoformat()}: {new_pitches:,} new pitches, "
+            f"{games_result['games_updated']} game(s) updated, "
+            f"{games_result['players_updated']} player(s) checked."
+        )
+    if failed:
+        summary += f" Failed and kept their previous data: {', '.join(failed)}."
+    log.info("pull done - %s", summary)
+    return pull_succeeded, new_pitches, summary
+
+
+def _run(full_warmup):
+    season = CURRENT_SEASON
+    try:
+        pull_succeeded, new_pitches, summary = _pull_steps(full_warmup, season)
     except Exception as e:
-        _status["detail"] = f"Refresh failed: {e}"
-        log.error("pull failed (%s): %s", type(e).__name__, e)
-        traceback.print_exc()
+        # The steps guard themselves; this covers the bookkeeping around them, so the warm-up below
+        # and the lock release always happen.
+        log.exception("pull failed outside its steps")
+        pull_succeeded, new_pitches, summary = False, 0, f"Refresh failed: {e}"
 
     # Warm-up runs in its OWN try/except, regardless of whether the pull
     # above succeeded - a network blip from Savant/the MLB Stats API used
@@ -287,11 +324,8 @@ def _run(full_warmup):
         if pull_succeeded and new_pitches > 0:
             _precompute_tunneling_pairs(season)
         warm_cache_sync(full=full_warmup)
-        if pull_succeeded:
-            _status["state"] = "done"
-        else:
-            _status["state"] = "error"
-            _status["detail"] += " (warmed from existing data)"
+        _status["state"] = "done" if pull_succeeded else "error"
+        _status["detail"] = summary if pull_succeeded else summary + " (warmed from existing data)"
         log.info("warm-up done")
     except Exception as e:
         _status["state"] = "error"

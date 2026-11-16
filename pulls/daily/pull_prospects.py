@@ -167,7 +167,8 @@ def fetch_stat_line(session, mlb_id, level, is_pitcher, season):
     """Returns (gp, k_pct, bb_pct, ops, era) from statsapi at the sportId
     matching the prospect's Pipeline-listed level, or all-None if the level
     isn't recognized or the player has no season stats there (e.g. injured
-    all year, just signed)."""
+    all year, just signed). Returns None when the request itself failed, so the
+    caller can keep the stat line it already has instead of blanking it."""
     sport_id = LEVEL_TO_SPORT_ID.get(level)
     if sport_id is None:
         return None, None, None, None, None
@@ -180,7 +181,7 @@ def fetch_stat_line(session, mlb_id, level, is_pitcher, season):
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        return None, None, None, None, None
+        return None
 
     splits = (data.get("stats") or [{}])[0].get("splits") or []
     if not splits:
@@ -223,10 +224,17 @@ def run(season: int):
     unmatched_teams = set()
     unmapped_levels = set()
 
+    stored_stats = {row[0]: row[1:] for row in conn.execute(
+        "SELECT mlb_id, gp, k_pct, bb_pct, ops, era FROM prospects WHERE season = ?", (season,))}
+    stat_failures = []
+
     def fetch_one(mlb_id, r):
         is_pitcher = _is_pitcher(r["position"])
-        gp, k_pct, bb_pct, ops, era = fetch_stat_line(session, mlb_id, r["level"], is_pitcher, season)
-        return mlb_id, r, is_pitcher, (gp, k_pct, bb_pct, ops, era)
+        stat_line = fetch_stat_line(session, mlb_id, r["level"], is_pitcher, season)
+        if stat_line is None:
+            stat_failures.append(mlb_id)
+            stat_line = stored_stats.get(mlb_id, (None, None, None, None, None))
+        return mlb_id, r, is_pitcher, stat_line
 
     results = {}
     with ThreadPoolExecutor(10) as pool:
@@ -282,6 +290,8 @@ def run(season: int):
     print(f"\nUpserted {len(db_rows)} prospects ({len(top100_ranks)} on the Top 100, "
           f"{have_stats} with a season stat line).")
     print(f"Removed {dropped} prospect(s) no longer on any list.")
+    if stat_failures:
+        print(f"  WARNING: {len(stat_failures)} stat-line request(s) failed; those prospects keep the stat line already stored.")
     if unmatched_teams:
         print(f"  WARNING: {len(unmatched_teams)} team name(s) didn't match the teams table: {sorted(unmatched_teams)}")
     if unmapped_levels:
